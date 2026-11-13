@@ -1,0 +1,418 @@
+<!doctype html>
+<!--
+  Encore — Google Cast Custom Web Receiver.
+  Runs the official YouTube IFrame Player on the TV, holds the karaoke queue, and talks to the
+  Encore app over urn:x-cast:app.encore.karaoke (see Packages/EncoreKit/.../CastProtocol.swift).
+  Host on HTTPS and register its URL as a Custom Receiver in the Cast SDK Developer Console.
+  Add ?debug to the URL to show a log on screen.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Encore</title>
+<style>
+  :root { --bg: #0B0912; --glow: #2A1F45; --text: #F4F1FA; --muted: #B7B0C8; --dim: #8F88A2; --amber: #FFB547; --on-amber: #2A1A00; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; color: var(--text); font-family: system-ui, "Roboto", sans-serif;
+    background: radial-gradient(90% 80% at 15% 0%, var(--glow), transparent 60%), var(--bg); }
+  .ey { font-size: 1.05vw; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--amber); }
+  .round { font-family: "Google Sans", ui-rounded, system-ui, sans-serif; }
+  [hidden] { display: none !important; }
+
+  #stage { display: grid; grid-template-columns: 70vw 1fr; gap: 2vw; padding: 2.4vw; height: 100%; }
+  #left { display: flex; flex-direction: column; gap: 1.4vw; min-width: 0; }
+  #playerWrap { aspect-ratio: 16 / 9; border-radius: .8vw; overflow: hidden; background: #000; }
+  #playerWrap iframe, #player { width: 100%; height: 100%; border: 0; display: block; }
+  #nowbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 2vw; }
+  #nowTitle { font-size: 2.6vw; font-weight: 700; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #nowArtist { font-size: 1.5vw; color: var(--muted); }
+  #time { font-size: 1.3vw; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #bar { height: .45vw; border-radius: .3vw; background: rgba(255,255,255,.15); overflow: hidden; }
+  #bar i { display: block; height: 100%; width: 0; background: var(--amber); transition: width 1s linear; }
+
+  #rail { display: flex; flex-direction: column; gap: 1.2vw; min-width: 0; }
+  .item { display: grid; grid-template-columns: 7.5vw minmax(0, 1fr); gap: 1vw; align-items: center; }
+  .item.first { background: rgba(255,181,71,.12); border-radius: .8vw; padding: .8vw; margin: 0 -.8vw; }
+  .thumb { width: 100%; aspect-ratio: 16 / 9; border-radius: .5vw; object-fit: cover; background: #241d36; display: block; }
+  .it { font-weight: 600; font-size: 1.35vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .is { font-size: 1.1vw; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #railEmpty { font-size: 1.3vw; color: var(--dim); }
+  #brand { margin-top: auto; font-size: 1.1vw; font-weight: 600; color: var(--dim); }
+
+  .center { position: absolute; inset: 0; display: grid; place-items: center; }
+  #idle .box { display: flex; flex-direction: column; align-items: center; gap: 1.6vw; text-align: center; }
+  #idle .logo { width: 11vw; height: 11vw; border-radius: 2.4vw; background: var(--amber); display: grid; place-items: center; font-size: 6vw; }
+  #idle h1 { margin: 0; font-size: 5vw; font-weight: 800; }
+  #idle p { margin: 0; font-size: 1.8vw; color: var(--muted); }
+
+  #inter .box { display: grid; grid-template-columns: 42vw minmax(0, 1fr); gap: 4vw; align-items: center; padding: 0 6vw; width: 100%; }
+  #inter img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 1.2vw; box-shadow: 0 2vw 5vw -2vw rgba(0,0,0,.7); }
+  #interSinger { font-size: 3vw; font-weight: 800; color: var(--amber); margin-top: .8vw; }
+  #interTitle { font-size: 5vw; font-weight: 800; line-height: 1; margin: .8vw 0; }
+  #interArtist { font-size: 2.2vw; color: #C9C2D9; }
+  #count { display: flex; align-items: center; gap: 1.4vw; margin-top: 3vw; font-size: 1.6vw; color: #C9C2D9; }
+  #ring { width: 6vw; height: 6vw; border-radius: 50%; display: grid; place-items: center; }
+  #ring b { width: 4.8vw; height: 4.8vw; border-radius: 50%; background: var(--bg); display: grid; place-items: center; font-size: 2.4vw; font-variant-numeric: tabular-nums; }
+  #then { margin-top: 2.4vw; font-size: 1.4vw; color: var(--dim); }
+
+  #notice { position: absolute; left: 50%; bottom: 3vw; transform: translateX(-50%); background: rgba(20,16,30,.92); border: 1px solid rgba(255,255,255,.12);
+    padding: 1vw 2vw; border-radius: 3vw; font-size: 1.4vw; }
+  #log { position: absolute; right: 1vw; bottom: 1vw; width: 40vw; max-height: 30vh; overflow: hidden; font: 11px/1.4 ui-monospace, monospace; color: #9a93ab; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="stage" hidden>
+  <div id="left">
+    <div id="playerWrap"><div id="player"></div></div>
+    <div id="nowbar">
+      <div style="min-width:0">
+        <div class="ey" id="nowEyebrow">Now singing</div>
+        <div id="nowTitle" class="round"></div>
+        <div id="nowArtist"></div>
+      </div>
+      <div id="time">0:00 / 0:00</div>
+    </div>
+    <div id="bar"><i></i></div>
+  </div>
+  <div id="rail">
+    <div class="ey">Up next</div>
+    <div id="railEmpty">Add songs from the Encore app</div>
+    <div id="railItems" style="display:flex;flex-direction:column;gap:1.2vw"></div>
+    <div id="brand">🎤 Encore</div>
+  </div>
+</div>
+
+<div id="idle" class="center">
+  <div class="box">
+    <div class="logo">🎤</div>
+    <h1 class="round">Encore</h1>
+    <p>Pick a song on your phone to start the night.</p>
+  </div>
+</div>
+
+<div id="inter" class="center" hidden>
+  <div class="box">
+    <img id="interThumb" alt="">
+    <div style="min-width:0">
+      <div class="ey">Up next</div>
+      <div id="interSinger" class="round"></div>
+      <div id="interTitle" class="round"></div>
+      <div id="interArtist"></div>
+      <div id="count"><div id="ring"><b id="countNum">5</b></div>Grab the mic!</div>
+      <div id="then"></div>
+    </div>
+  </div>
+</div>
+
+<div id="notice" hidden></div>
+<div id="log" hidden></div>
+
+<script>
+  "use strict";
+  const NAMESPACE = "urn:x-cast:app.encore.karaoke";
+  const DEBUG = new URLSearchParams(location.search).has("debug");
+  const LOCAL = new URLSearchParams(location.search).has("local"); // desktop testing without a Chromecast
+  const BLOCKED = [101, 150];
+  const MAX_QUEUE = 500;
+  const IDLE_CLOSE_MS = 10 * 60 * 1000; // close after 10 idle minutes with no phones connected
+  const UNAVAILABLE = [2, 100];
+  const ID_PATTERN = /^[A-Za-z0-9_-]{11}$/;
+
+  const state = {
+    current: null,        // entry being played
+    upNext: [],           // entries waiting
+    settings: { autoplay: true, interstitialSeconds: 5, skipBlocked: true },
+    player: null,
+    playerReady: false,
+    pendingLoad: null,
+    countdown: null,      // { remaining, timer }
+    lastError: null,
+    ctx: null,
+    progressTimer: null,
+    skipTimer: null,      // auto-skip after an error; cancelled whenever the song changes
+    idleTimer: null
+  };
+
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const thumb = (id) => ID_PATTERN.test(id) ? "https://i.ytimg.com/vi/" + id + "/hqdefault.jpg" : "";
+  const clock = (s) => { s = Math.max(0, Math.floor(s || 0)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
+    return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(x).padStart(2, "0"); };
+  const subtitle = (e) => [e.singer, e.artist].filter(Boolean).join(" · ");
+
+  function log(message) {
+    if (!DEBUG) return;
+    const el = $("log");
+    el.hidden = false;
+    el.textContent = new Date().toISOString().slice(11, 19) + "  " + message + "\n" + el.textContent.slice(0, 4000);
+  }
+
+  function notice(text) {
+    const el = $("notice");
+    el.textContent = text;
+    el.hidden = false;
+    clearTimeout(notice.timer);
+    notice.timer = setTimeout(() => { el.hidden = true; }, 5000);
+  }
+
+  // ---- Rendering -------------------------------------------------------------
+
+  function render() {
+    const counting = !!state.countdown;
+    $("idle").hidden = !!state.current || counting;
+    $("stage").hidden = !state.current || counting;
+    $("inter").hidden = !counting;
+
+    if (state.current) {
+      $("nowEyebrow").textContent = state.current.singer ? "Now singing · " + state.current.singer : "Now singing";
+      $("nowTitle").textContent = state.current.title;
+      $("nowArtist").textContent = state.current.artist || "";
+    }
+    const items = state.upNext.slice(0, 5);
+    $("railEmpty").hidden = items.length > 0;
+    $("railItems").innerHTML = items.map((e, i) =>
+      '<div class="item' + (i === 0 ? " first" : "") + '"><img class="thumb" src="' + thumb(e.videoId) + '" alt="">' +
+      '<div style="min-width:0"><div class="it">' + esc(e.title) + '</div><div class="is">' + esc(subtitle(e)) + "</div></div></div>").join("");
+
+    if (counting) {
+      const next = state.upNext.find(playable);
+      if (next) {
+        $("interThumb").src = thumb(next.videoId);
+        $("interSinger").textContent = next.singer || "";
+        $("interSinger").hidden = !next.singer;
+        $("interTitle").textContent = next.title;
+        $("interArtist").textContent = next.artist || "";
+        const then = state.upNext.filter((e) => e !== next).slice(0, 2).map((e) => e.title);
+        $("then").textContent = then.length ? "Then: " + then.join(" · ") : "";
+      }
+      const total = Math.max(1, state.settings.interstitialSeconds);
+      const pct = Math.round(state.countdown.remaining / total * 100);
+      $("ring").style.background = "conic-gradient(var(--amber) 0 " + pct + "%, rgba(255,255,255,.12) " + pct + "%)";
+      $("countNum").textContent = state.countdown.remaining;
+    }
+  }
+
+  function renderProgress() {
+    const p = state.player;
+    if (!p || typeof p.getCurrentTime !== "function") return;
+    const t = p.getCurrentTime() || 0, d = p.getDuration() || 0;
+    $("time").textContent = clock(t) + " / " + clock(d);
+    $("bar").firstElementChild.style.width = (d > 0 ? Math.min(100, t / d * 100) : 0) + "%";
+  }
+
+  // ---- Status back to the app ----------------------------------------------
+
+  function report(extra) {
+    const p = state.player;
+    const payload = Object.assign({
+      type: "state",
+      entryId: state.current ? state.current.id : null,
+      videoId: state.current ? state.current.videoId : null,
+      playerState: p && p.getPlayerState ? p.getPlayerState() : -1,
+      currentTime: p && p.getCurrentTime ? p.getCurrentTime() || 0 : 0,
+      duration: p && p.getDuration ? p.getDuration() || 0 : 0
+    }, state.countdown ? { interstitialRemaining: state.countdown.remaining } : {}, extra || {});
+    log("→ " + JSON.stringify(payload));
+    if (state.ctx) {
+      try { state.ctx.sendCustomMessage(NAMESPACE, undefined, payload); } catch (e) { log("send failed: " + e.message); }
+    }
+  }
+
+  // ---- Queue -------------------------------------------------------------------
+
+  function playable(entry) {
+    return entry && ID_PATTERN.test(entry.videoId);
+  }
+
+  function start(entry, startSeconds) {
+    cancelCountdown();
+    clearTimeout(state.skipTimer);
+    clearTimeout(state.idleTimer);
+    state.current = entry;
+    state.lastError = null;
+    render();
+    if (!playable(entry)) { fail(2); return; }
+    if (!state.playerReady) { state.pendingLoad = { entry: entry, start: startSeconds || 0 }; return; }
+    log("load " + entry.videoId);
+    state.player.loadVideoById({ videoId: entry.videoId, startSeconds: startSeconds || 0 });
+  }
+
+  function advance() {
+    cancelCountdown();
+    clearTimeout(state.skipTimer);
+    const next = state.upNext.shift();
+    if (next) {
+      start(next);
+    } else {
+      state.current = null;
+      if (state.player && state.player.stopVideo) state.player.stopVideo();
+      render();
+      report({ event: "queueFinished" });
+      scheduleIdleClose();
+    }
+  }
+
+  // Don't keep the TV on Encore forever after the party: close when idle and nobody is connected.
+  function scheduleIdleClose() {
+    clearTimeout(state.idleTimer);
+    if (!state.ctx) return;
+    state.idleTimer = setTimeout(() => {
+      if (!state.current && state.ctx.getSenders().length === 0) { log("idle: closing"); state.ctx.stop(); }
+    }, IDLE_CLOSE_MS);
+  }
+
+  function onEnded() {
+    if (!state.settings.autoplay) { report(); return; }
+    if (!state.upNext.length || state.settings.interstitialSeconds <= 0) { advance(); return; }
+    state.countdown = { remaining: state.settings.interstitialSeconds, timer: null };
+    render();
+    report();
+    state.countdown.timer = setInterval(() => {
+      state.countdown.remaining -= 1;
+      if (state.countdown.remaining <= 0) { advance(); return; }
+      render();
+      report();
+    }, 1000);
+  }
+
+  function cancelCountdown() {
+    if (state.countdown) clearInterval(state.countdown.timer);
+    state.countdown = null;
+  }
+
+  function fail(code) {
+    const title = state.current ? state.current.title : "This song";
+    state.lastError = code;
+    report({ event: "error", errorCode: code });
+    if (BLOCKED.includes(code)) notice("“" + title + "” can only play on YouTube. Skipping it.");
+    else if (UNAVAILABLE.includes(code)) notice("“" + title + "” is unavailable. Skipping it.");
+    else notice("YouTube couldn’t play “" + title + "” (error " + code + ").");
+    if (state.settings.skipBlocked || !BLOCKED.includes(code)) {
+      const failed = state.current;
+      clearTimeout(state.skipTimer);
+      state.skipTimer = setTimeout(() => { if (state.current === failed) advance(); }, 3000);
+    }
+  }
+
+  // ---- Commands from the app ----------------------------------------------------
+
+  const clip = (v, n) => String(v == null ? "" : v).slice(0, n);
+
+  function cleanEntry(e) {
+    if (!e || typeof e !== "object") return null;
+    const seconds = Number(e.durationSeconds);
+    return {
+      id: clip(e.id, 64), videoId: clip(e.videoId, 11), title: clip(e.title, 300),
+      artist: clip(e.artist, 300), singer: e.singer ? clip(e.singer, 60) : null,
+      durationSeconds: Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 172800) : 0
+    };
+  }
+
+  function cleanSettings(s) {
+    if (!s || typeof s !== "object") return;
+    if (typeof s.autoplay === "boolean") state.settings.autoplay = s.autoplay;
+    if (typeof s.skipBlocked === "boolean") state.settings.skipBlocked = s.skipBlocked;
+    const n = Number(s.interstitialSeconds);
+    if (Number.isFinite(n)) state.settings.interstitialSeconds = Math.max(0, Math.min(60, Math.round(n)));
+  }
+
+  function handle(message) {
+    log("← " + JSON.stringify(message));
+    if (!message || typeof message !== "object") return;
+    cleanSettings(message.settings);
+    if (Array.isArray(message.upNext)) state.upNext = message.upNext.slice(0, MAX_QUEUE).map(cleanEntry).filter(Boolean);
+    switch (message.type) {
+      case "load": {
+        const entry = cleanEntry(message.entry);
+        const startAt = Number(message.startSeconds);
+        if (entry) start(entry, Number.isFinite(startAt) && startAt > 0 ? Math.min(startAt, 172800) : 0);
+        break;
+      }
+      case "setQueue": render(); report(); break;
+      case "play":
+        if (state.countdown) { advance(); break; }
+        if (state.player) state.player.playVideo();
+        break;
+      case "pause": if (state.player) state.player.pauseVideo(); break;
+      case "seek": {
+        const seconds = Number(message.seconds);
+        if (!state.player || !Number.isFinite(seconds)) break;
+        const wasCounting = !!state.countdown;
+        cancelCountdown();
+        state.player.seekTo(Math.max(0, seconds), true);
+        if (wasCounting) { state.player.playVideo(); render(); }
+        renderProgress();
+        break;
+      }
+      case "next": advance(); break;
+      case "getState": report(); break;
+      default: log("unknown message " + message.type);
+    }
+  }
+  window.encoreReceiver = { handle }; // for ?local testing from the console
+
+  // ---- YouTube player ------------------------------------------------------------
+
+  window.onYouTubeIframeAPIReady = function () {
+    state.player = new YT.Player("player", {
+      width: "100%", height: "100%",
+      playerVars: { autoplay: 1, controls: 1, playsinline: 1, rel: 0, origin: location.origin },
+      events: {
+        onReady: () => {
+          state.playerReady = true;
+          log("player ready");
+          if (state.pendingLoad) { const p = state.pendingLoad; state.pendingLoad = null; start(p.entry, p.start); }
+        },
+        onStateChange: (e) => {
+          log("state " + e.data);
+          clearInterval(state.progressTimer);
+          if (e.data === 1) {
+            if (state.countdown) { cancelCountdown(); render(); }
+            state.progressTimer = setInterval(() => { renderProgress(); report(); }, 2000);
+          }
+          renderProgress();
+          report();
+          if (e.data === 0) onEnded();
+        },
+        onError: (e) => fail(e.data)
+      }
+    });
+  };
+
+  // ---- Boot ----------------------------------------------------------------------
+
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = src; s.onload = resolve; s.onerror = () => reject(new Error("failed to load " + src));
+      document.head.appendChild(s);
+    });
+  }
+
+  (async function boot() {
+    render();
+    if (!LOCAL) {
+      await loadScript("https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js");
+      const ctx = cast.framework.CastReceiverContext.getInstance();
+      state.ctx = ctx;
+      ctx.addCustomMessageListener(NAMESPACE, (event) => {
+        try { handle(typeof event.data === "string" ? JSON.parse(event.data) : event.data); }
+        catch (err) { log("bad message: " + err.message); }
+      });
+      ctx.addEventListener(cast.framework.system.EventType.SENDER_DISCONNECTED, () => {
+        log("sender left; the queue keeps playing");
+        if (!state.current) scheduleIdleClose();
+      });
+      const options = new cast.framework.CastReceiverOptions();
+      options.customNamespaces = { [NAMESPACE]: cast.framework.system.MessageType.JSON };
+      options.skipPlayersLoad = true;    // Encore doesn't use the Cast media player
+      options.disableIdleTimeout = true; // otherwise the receiver closes while YouTube plays outside CAF
+      ctx.start(options);
+    }
+    await loadScript("https://www.youtube.com/iframe_api");
+  })().catch((e) => { log(e.message); notice("Encore couldn’t start: " + e.message); });
+</script>
+</body>
+</html>
